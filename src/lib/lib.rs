@@ -4,6 +4,7 @@ use std::{io::Write, path::PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use futures::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
 use soup::{NodeExt, QueryBuilderExt};
 
 #[derive(Debug)]
@@ -53,9 +54,12 @@ where
     pub async fn scraper(&self) -> Result<Vec<Houseplant>> {
         // Get title page
         let url = "https://komnatnie-rastenija.ru/";
+        println!("Парсим сайт: {}", url);
+
         let response = self.client.get(url).send().await?;
         let html = response.text().await?;
         // Parse categories ('Рубрики')
+        println!("[1/3] Парсим категории");
         let soup = soup::Soup::new(&html);
         let urls = soup
             .class("cat-item")
@@ -64,9 +68,23 @@ where
             .filter_map(|node| node.get("href"))
             .collect::<Vec<String>>();
 
+        println!("Найдено {} категорий!", urls.len());
+        // println!("[2/4] Для каждой категории парсим ссылки на растения");
+
+        let sty = ProgressStyle::default_bar()
+            .template("{msg} {wide_bar:.cyan/blue} {pos}/{len}")
+            .progress_chars("##-");
+        let pb = ProgressBar::new(urls.len() as u64);
+        pb.set_style(sty.clone());
+        pb.set_message(&format!("[2/3] Для каждой из {} категорий парсим ссылки на растения", urls.len()));
+
         // For each category get all plants urls
         let mut plants_url = futures::stream::iter(urls)
-            .map(|url| async move { self.parse_category(&url).await })
+            .map(|url| {
+                let res = async move { self.parse_category(&url).await };
+                pb.inc(1);
+                res
+            })
             .buffer_unordered(self.concurrent_tasks)
             .collect::<Vec<_>>()
             .await
@@ -75,22 +93,34 @@ where
             .flatten()
             .collect::<Vec<String>>();
 
+        pb.finish();
+
         // Remove duplicates
         plants_url.sort_unstable();
         plants_url.dedup();
 
+        println!("Получено {} ссылок на растения", plants_url.len());
+
+        let pb = ProgressBar::new(plants_url.len() as u64);
+        pb.set_style(sty.clone());
+        pb.set_message(&format!("[3/3] Парсим {} растений", plants_url.len()));
+
         // Parse all plants info
         let plants_info = futures::stream::iter(plants_url)
-            .map(|url| async move {
-                let opt_plant = self.parse_houseplant(&url).await.ok();
-                if let Some(plant) = opt_plant.as_ref() {
-                    if let Some(db) = &self.database {
-                        db.insert(plant)
-                            .await
-                            .expect("Failed to insert info into database");
+            .map(|url| {
+                let res = async move {
+                    let opt_plant = self.parse_houseplant(&url).await.ok();
+                    if let Some(plant) = opt_plant.as_ref() {
+                        if let Some(db) = &self.database {
+                            db.insert(plant)
+                                .await
+                                .expect("Failed to insert info into database");
+                        }
                     }
-                }
-                opt_plant
+                    opt_plant
+                };
+                pb.inc(1);
+                res
             })
             .buffer_unordered(self.concurrent_tasks)
             .collect::<Vec<_>>()
@@ -98,6 +128,10 @@ where
             .into_iter()
             .flatten()
             .collect::<Vec<Houseplant>>();
+
+        pb.finish();
+
+        println!("Готово!");
 
         Ok(plants_info)
     }
@@ -140,6 +174,7 @@ where
         let pages = (1..=page_count)
             .map(|page| url.to_owned() + "/page/" + page.to_string().as_str())
             .collect::<Vec<String>>();
+
         // Parse plants urls
         let plants_url = futures::stream::iter(pages)
             .map(|url| async move { self.parse_titles(&url).await })
@@ -150,6 +185,7 @@ where
             .flatten()
             .flatten()
             .collect::<Vec<String>>();
+
         Some(plants_url)
     }
 

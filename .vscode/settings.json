@@ -1,15 +1,16 @@
 {
     "cSpell.words": [
         "Sqlite",
+        "chrono",
         "concat",
         "dedup",
         "dotenv",
+        "indicatif",
         "itemprop",
         "prettytable",
         "printstd",
         "ptable",
         "reqwest",
-        "sqlx",
-        "chrono"
+        "sqlx"
     ]
 }
